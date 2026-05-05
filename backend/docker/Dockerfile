@@ -20,7 +20,7 @@ COPY pyproject.toml ./
 
 # Install into a dedicated prefix we'll copy into the runtime image.
 RUN pip install --upgrade pip \
-    && pip install --prefix=/install ".[]"
+    && pip install --prefix=/install "."
 
 COPY app ./app
 
