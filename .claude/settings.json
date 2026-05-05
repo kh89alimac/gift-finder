@@ -1,0 +1,17 @@
+{
+  "enabledPlugins": {
+    "code-documentation@claude-code-workflows": true,
+    "debugging-toolkit@claude-code-workflows": true,
+    "git-pr-workflows@claude-code-workflows": true,
+    "backend-development@claude-code-workflows": true,
+    "frontend-mobile-development@claude-code-workflows": true,
+    "unit-testing@claude-code-workflows": true,
+    "cloud-infrastructure@claude-code-workflows": true,
+    "incident-response@claude-code-workflows": true,
+    "javascript-typescript@claude-code-workflows": true,
+    "conductor@claude-code-workflows": true,
+    "tdd-workflows@claude-code-workflows": true,
+    "qa-orchestra@claude-code-workflows": true,
+    "application-performance@claude-code-workflows": true
+  }
+}

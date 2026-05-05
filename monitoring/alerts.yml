@@ -1,0 +1,304 @@
+# Prometheus alerting rules for Gift Finder application
+#
+# This file defines alerts for critical application metrics. These rules
+# should be loaded into Prometheus or compatible alerting systems.
+#
+# For cloud platforms (CloudWatch, DataDog, etc.), translate these rules
+# to the platform-specific format.
+
+groups:
+  - name: gift-finder-application
+    interval: 30s
+    rules:
+      # API Error Rate Alert
+      - alert: HighAPIErrorRate
+        expr: |
+          (sum(rate(http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m]))) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API error rate exceeds 5%"
+          description: "{{ .Value | humanizePercentage }} of API requests are failing (5xx)"
+          runbook: "https://internal.wiki/runbook/api-errors"
+          action: "Check API logs: docker compose logs api"
+
+      # API Response Time Alert
+      - alert: HighAPILatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API P95 latency exceeds 1 second"
+          description: "P95 latency: {{ .Value }}s"
+          runbook: "https://internal.wiki/runbook/api-latency"
+          action: "Check database performance and Redis connectivity"
+
+      # Database Connection Pool Exhaustion
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          (pg_stat_activity_count / pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool usage above 80%"
+          description: "Active connections: {{ .Value | humanize }} / max {{ with query \"pg_settings_max_connections\" }}{{ . }}{{ end }}"
+          runbook: "https://internal.wiki/runbook/db-connection-pool"
+          action: "Scale API workers down or increase max_connections in PostgreSQL config"
+
+      # Database Slow Queries
+      - alert: DatabaseSlowQueries
+        expr: |
+          rate(pg_slow_queries_total[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High rate of slow database queries"
+          description: "{{ .Value }} slow queries per second"
+          runbook: "https://internal.wiki/runbook/db-slow-queries"
+          action: "Review query logs and check for missing indexes"
+
+      # Database Replication Lag
+      - alert: DatabaseReplicationLag
+        expr: |
+          pg_replication_lag_seconds > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database replication lag exceeds 5 seconds"
+          description: "Lag: {{ .Value }}s"
+          runbook: "https://internal.wiki/runbook/db-replication-lag"
+
+      # Celery Worker Queue Backlog
+      - alert: CeleryQueueBacklog
+        expr: |
+          celery_queue_length{queue="default"} > 100
+        for: 10m
+        labels:
+          severity: warning
+          component: celery
+        annotations:
+          summary: "Celery worker queue backlog exceeds 100 tasks"
+          description: "Queue length: {{ .Value }}"
+          runbook: "https://internal.wiki/runbook/celery-backlog"
+          action: "Scale up Celery workers: docker compose up -d --scale worker=N"
+
+      # Celery Task Failure Rate
+      - alert: HighCeleryTaskFailureRate
+        expr: |
+          (sum(rate(celery_task_failed_total[5m]))
+          / sum(rate(celery_task_total[5m]))) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          component: celery
+        annotations:
+          summary: "Celery task failure rate exceeds 1%"
+          description: "{{ .Value | humanizePercentage }} of tasks are failing"
+          runbook: "https://internal.wiki/runbook/celery-failures"
+          action: "Check Flower dashboard: http://localhost:5555"
+
+      # Scraper Job Queue Backlog
+      - alert: ScraperJobQueueBacklog
+        expr: |
+          scraper_jobs_queued_total > 50
+        for: 10m
+        labels:
+          severity: warning
+          component: scraper
+        annotations:
+          summary: "Scraper job queue backlog exceeds 50 jobs"
+          description: "Queued jobs: {{ .Value }}"
+          runbook: "https://internal.wiki/runbook/scraper-backlog"
+          action: "Check scraper logs and verify Instagram API is accessible"
+
+      # Scraper API Rate Limit Approaching
+      - alert: ScraperRateLimitWarning
+        expr: |
+          scraper_instagram_rate_limit_remaining_total < 100
+        for: 5m
+        labels:
+          severity: warning
+          component: scraper
+        annotations:
+          summary: "Instagram API rate limit approaching"
+          description: "Remaining requests: {{ .Value }}"
+          runbook: "https://internal.wiki/runbook/rate-limits"
+          action: "Throttle scraper concurrency or wait for rate limit reset"
+
+      # Scraper Job Failure Rate
+      - alert: HighScraperJobFailureRate
+        expr: |
+          (sum(rate(scraper_jobs_failed_total[5m]))
+          / sum(rate(scraper_jobs_total[5m]))) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: scraper
+        annotations:
+          summary: "Scraper job failure rate exceeds 5%"
+          description: "{{ .Value | humanizePercentage }} of scraper jobs are failing"
+          runbook: "https://internal.wiki/runbook/scraper-failures"
+
+      # Review Queue Backlog
+      - alert: ReviewQueueBacklog
+        expr: |
+          review_queue_pending_total > 200
+        for: 30m
+        labels:
+          severity: warning
+          component: review
+        annotations:
+          summary: "Review queue backlog exceeds 200 items"
+          description: "Pending reviews: {{ .Value }}"
+          runbook: "https://internal.wiki/runbook/review-queue"
+          action: "Allocate more resources to review processing"
+
+      # Redis Memory Usage
+      - alert: RedisMemoryUsageHigh
+        expr: |
+          (redis_memory_used_bytes / redis_memory_max_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Redis memory usage exceeds 85%"
+          description: "Memory used: {{ .Value | humanizePercentage }}"
+          runbook: "https://internal.wiki/runbook/redis-memory"
+          action: "Increase maxmemory or evict old cache entries"
+
+      # Redis Evictions
+      - alert: RedisHighEvictionRate
+        expr: |
+          rate(redis_evicted_keys_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "High rate of Redis key evictions"
+          description: "Evictions per second: {{ .Value }}"
+          runbook: "https://internal.wiki/runbook/redis-evictions"
+
+      # Embedding Task Latency
+      - alert: HighEmbeddingTaskLatency
+        expr: |
+          celery_task_latency_seconds{task="embed_item_task"} > 60
+        for: 5m
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "Embedding task latency exceeds 60 seconds"
+          description: "Latency: {{ .Value }}s"
+          runbook: "https://internal.wiki/runbook/embedding-latency"
+          action: "Verify OpenAI API availability; check network connectivity"
+
+      # Recommendation Engine Staleness
+      - alert: RecommendationEngineStaleness
+        expr: |
+          (time() - recommendation_engine_last_update_seconds) > 86400
+        for: 1h
+        labels:
+          severity: warning
+          component: ai
+        annotations:
+          summary: "Recommendation engine embeddings are stale (>24h)"
+          description: "Last updated: {{ .Value | humanizeDuration }} ago"
+          runbook: "https://internal.wiki/runbook/recommendation-staleness"
+
+      # Disk Space Warning
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Disk space available is below 10%"
+          description: "Free space: {{ .Value | humanizePercentage }}"
+          runbook: "https://internal.wiki/runbook/disk-space"
+
+      # Frontend Build Frequency
+      - alert: FrontendBuildFrequencyHigh
+        expr: |
+          rate(frontend_build_total[1h]) > 10
+        labels:
+          severity: info
+          component: frontend
+        annotations:
+          summary: "Frontend is being rebuilt frequently"
+          description: "{{ .Value }} builds per hour"
+          action: "Review deployment pipeline efficiency"
+
+      # Deployment Failure
+      - alert: DeploymentFailed
+        expr: |
+          increase(deployment_failed_total[5m]) > 0
+        labels:
+          severity: critical
+          component: deployment
+        annotations:
+          summary: "Recent deployment failure detected"
+          description: "Deployment pipeline failed in last 5 minutes"
+          runbook: "https://internal.wiki/runbook/deployment-failure"
+          action: "Check GitHub Actions logs and rollback if necessary"
+
+      # Service Health Check Failures
+      - alert: ServiceHealthCheckFailing
+        expr: |
+          health_check_status == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: health
+        annotations:
+          summary: "Service health check is failing"
+          description: "Service {{ $labels.service }} is not healthy"
+          action: "Check service logs and restart if necessary"
+
+  - name: gift-finder-slo
+    interval: 1m
+    rules:
+      # API Availability SLO (99.5%)
+      - alert: APISLOBreach
+        expr: |
+          (sum(rate(http_requests_total{status!~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m]))) < 0.995
+        for: 15m
+        labels:
+          severity: critical
+          slo: "api-availability"
+        annotations:
+          summary: "API availability SLO breach (target: 99.5%)"
+          description: "Availability: {{ .Value | humanizePercentage }}"
+          action: "Page on-call engineer immediately"
+
+      # API Response Time SLO (P99 < 2s)
+      - alert: APILatencySLOBreach
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2.0
+        for: 15m
+        labels:
+          severity: warning
+          slo: "api-latency"
+        annotations:
+          summary: "API latency SLO breach (target: P99 < 2s)"
+          description: "P99 latency: {{ .Value }}s"

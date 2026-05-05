@@ -1,0 +1,228 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deployment
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    outputs:
+      backend-image: ${{ steps.meta-backend.outputs.tags }}
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
+      worker-image: ${{ steps.meta-worker.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (backend)
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/backend
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=ref,event=branch
+            type=raw,value=latest
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (frontend)
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=ref,event=branch
+            type=raw,value=latest
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (worker)
+        id: meta-worker
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/worker
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=ref,event=branch
+            type=raw,value=latest
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/docker/Dockerfile.worker
+          push: true
+          tags: ${{ steps.meta-worker.outputs.tags }}
+          labels: ${{ steps.meta-worker.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  migrate:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Alembic migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          docker run --rm \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            ${{ needs.build-and-push.outputs.backend-image }} \
+            alembic upgrade head
+
+      - name: Run HNSW index migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          docker run --rm \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            ${{ needs.build-and-push.outputs.backend-image }} \
+            alembic upgrade 002_hnsw_index
+        continue-on-error: true
+
+  deploy-backend:
+    needs: [build-and-push, migrate]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy backend via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd /app/giftfinder
+            docker compose pull api worker beat
+            docker compose up -d api worker beat
+            sleep 5
+            docker compose ps
+
+      - name: Health check (API)
+        uses: nick-invision/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 10
+          retry_wait_seconds: 10
+          command: |
+            curl -fsS https://${{ secrets.DEPLOY_HOST }}/api/v1/health || exit 1
+
+  deploy-frontend:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy frontend via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd /app/giftfinder
+            docker compose pull frontend
+            docker compose up -d frontend
+            sleep 5
+            docker compose ps
+
+      - name: Health check (Frontend)
+        uses: nick-invision/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 10
+          retry_wait_seconds: 10
+          command: |
+            curl -fsS https://${{ secrets.DEPLOY_HOST }}/ || exit 1
+
+  smoke-test:
+    needs: [deploy-backend, deploy-frontend]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 5
+
+      - name: Smoke test - Health check
+        run: |
+          curl -fsS https://${{ secrets.DEPLOY_HOST }}/api/v1/health | grep -q '"status":"healthy"' || exit 1
+
+      - name: Smoke test - Create test user
+        id: create-user
+        run: |
+          RESPONSE=$(curl -s -X POST https://${{ secrets.DEPLOY_HOST }}/api/v1/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{
+              "email": "smoke-test-'"$(date +%s)"'@example.com",
+              "password": "TestPassword123!",
+              "full_name": "Smoke Test User"
+            }')
+          echo "response=${RESPONSE}" >> $GITHUB_OUTPUT
+          echo "${RESPONSE}" | grep -q '"access_token"' || exit 1
+
+      - name: Smoke test - Get items
+        run: |
+          curl -fsS https://${{ secrets.DEPLOY_HOST }}/api/v1/items | grep -q '"items"' || exit 1
+
+      - name: Notify deployment success
+        run: |
+          echo "Deployment completed successfully"
+          echo "API: https://${{ secrets.DEPLOY_HOST }}/api/v1/docs"
+          echo "Frontend: https://${{ secrets.DEPLOY_HOST }}/"

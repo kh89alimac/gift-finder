@@ -1,0 +1,268 @@
+# Orchestration for the Gift Finder stack (development and production).
+#
+# Services:
+#   - postgres  PostgreSQL 16 with pgvector extension
+#   - redis     Redis 7 cache/broker
+#   - migration Alembic migrations (one-shot job)
+#   - api       FastAPI server :8000
+#   - worker    Celery worker(s)
+#   - beat      Celery beat scheduler (celery-redbeat)
+#   - frontend  Next.js 14 server :3000
+#   - flower    Celery monitoring UI :5555
+#
+# Bring it up with:  docker compose up --build
+# Load environment from .env: docker compose --env-file .env up
+
+version: "3.9"
+
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-development}
+  DEBUG: ${DEBUG:-false}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+asyncpg://${DB_USER:-gift}:${DB_PASSWORD:-gift}@postgres:5432/${DB_NAME:-giftfinder}
+  DATABASE_SYNC_URL: postgresql+psycopg://${DB_USER:-gift}:${DB_PASSWORD:-gift}@postgres:5432/${DB_NAME:-giftfinder}
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-before-any-deployment}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  S3_BUCKET: ${S3_BUCKET:-gift-finder-assets}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  INSTAGRAM_ACCESS_TOKEN: ${INSTAGRAM_ACCESS_TOKEN:-}
+
+x-common-deploy: &common-deploy
+  resources:
+    limits:
+      cpus: "1.0"
+      memory: 512M
+    reservations:
+      cpus: "0.5"
+      memory: 256M
+
+networks:
+  app:
+    driver: bridge
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    networks:
+      - app
+    environment:
+      POSTGRES_USER: ${DB_USER:-gift}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gift}
+      POSTGRES_DB: ${DB_NAME:-giftfinder}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gift} -d ${DB_NAME:-giftfinder}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      <<: *common-deploy
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - app
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAX_MEMORY:-256mb} --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      <<: *common-deploy
+
+  migration:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    restart: "no"
+    networks:
+      - app
+    environment:
+      <<: *app-env
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo "Running Alembic migrations..."
+        alembic upgrade head
+        echo "Running HNSW index migration..."
+        alembic upgrade 002_hnsw_index || echo "HNSW migration already applied or not available"
+        echo "Migrations completed"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      <<: *common-deploy
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    networks:
+      - app
+    environment:
+      <<: *app-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      <<: *common-deploy
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.worker
+    restart: unless-stopped
+    networks:
+      - app
+    environment:
+      <<: *app-env
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=${WORKER_CONCURRENCY:-4}
+      - --max-tasks-per-child=1000
+      - --time-limit=3600
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      <<: *common-deploy
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.worker
+    restart: unless-stopped
+    networks:
+      - app
+    environment:
+      <<: *app-env
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - beat
+      - --loglevel=info
+      - --scheduler
+      - redbeat.RedBeatScheduler
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      <<: *common-deploy
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - app
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "-O-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      <<: *common-deploy
+
+  flower:
+    image: mher/flower:2.0
+    restart: unless-stopped
+    networks:
+      - app
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      FLOWER_PORT: "5555"
+      FLOWER_BASIC_AUTH: ${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      <<: *common-deploy
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

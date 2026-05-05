@@ -1,0 +1,87 @@
+# docker-compose.override.yml - Local Development Overrides
+#
+# Docker Compose automatically loads this file for local development.
+# This overrides production docker-compose.yml with development-friendly settings.
+#
+# Copy to docker-compose.override.yml to use:
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Reference: https://docs.docker.com/compose/how-tos/override-default-compose-file
+
+version: "3.9"
+
+services:
+  postgres:
+    # Expose port for local database clients
+    ports:
+      - "5432:5432"
+    # Use local volume for persistence across restarts
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    # Expose port for local Redis CLI
+    ports:
+      - "6379:6379"
+
+  api:
+    # Mount source code for live reloading
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+    # Environment for development
+    environment:
+      APP_ENV: development
+      DEBUG: "true"
+      LOG_LEVEL: DEBUG
+    # Allow local API calls without SSL
+    ports:
+      - "8000:8000"
+
+  worker:
+    # Mount source code
+    volumes:
+      - ./backend/app:/app/app
+    # Show debug logs
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: DEBUG
+    # Reduce concurrency for local development
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - --loglevel=debug
+      - --concurrency=2
+
+  beat:
+    # Mount source code
+    volumes:
+      - ./backend/app:/app/app
+    # Show debug logs
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: DEBUG
+
+  frontend:
+    # Mount source code for hot reloading
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    # Allow local access without SSL
+    ports:
+      - "3000:3000"
+    # Show debug logs
+    environment:
+      APP_ENV: development
+
+  flower:
+    # Expose port for local access without authentication (dev only!)
+    ports:
+      - "5555:5555"
+    environment:
+      # Disable authentication for development (NEVER do this in production!)
+      FLOWER_BASIC_AUTH: ""

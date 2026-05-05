@@ -1,0 +1,50 @@
+# Celery worker image. Reuses the same dependencies as the API but starts
+# Celery instead of uvicorn. Build context is the backend/ directory.
+
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+RUN pip install --upgrade pip \
+    && pip install --prefix=/install "."  \
+    && pip install --prefix=/install celery[redis] celery-redbeat beautifulsoup4 Pillow slowapi structlog
+
+COPY app ./app
+
+# --- Runtime ----------------------------------------------------------------
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_ENV=production \
+    PYTHONPATH=/app \
+    C_FORCE_ROOT=0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash gift && mkdir /app && chown gift:gift /app
+
+WORKDIR /app
+
+COPY --from=builder /install /usr/local
+COPY --chown=gift:gift app /app/app
+
+USER gift
+
+# Default to a worker; compose can override the command for the beat container.
+CMD ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=4"]

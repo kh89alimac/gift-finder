@@ -1,0 +1,275 @@
+# docker-compose.prod.yml.example
+#
+# Production-specific Docker Compose configuration.
+#
+# This file should be reviewed and customized for your production environment.
+# Do NOT copy directly to production without reviewing all settings.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Reference: https://docs.docker.com/compose/how-tos/compose-file-merge/
+
+version: "3.9"
+
+services:
+  postgres:
+    # Use managed database service instead (AWS RDS, DigitalOcean Managed DB, etc.)
+    # This example is for self-hosted production
+    restart: always
+    environment:
+      # Use environment variables from .env
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    # Persist data to named volume with backup strategy
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    # Network isolation
+    networks:
+      - app
+    # Resource limits for stability
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+        reservations:
+          cpus: "2.0"
+          memory: 1G
+    # Health checks
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # Backup configuration (if using self-hosted)
+    labels:
+      - "backup=daily"
+      - "retention=30days"
+
+  redis:
+    restart: always
+    # Use managed Redis service instead (AWS ElastiCache, DigitalOcean Managed Redis)
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+        reservations:
+          cpus: "1.0"
+          memory: 256M
+    # Production-grade Redis configuration
+    command: >
+      redis-server
+      --maxmemory ${REDIS_MAX_MEMORY:-512mb}
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --rdbcompression yes
+    volumes:
+      - redis_data_prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  api:
+    restart: always
+    networks:
+      - app
+    # Use environment file for secrets
+    env_file: .env
+    deploy:
+      replicas: 3  # Run 3 instances for HA behind load balancer
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+      # Update policy for zero-downtime deployments
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      # Rollback on failure
+      rollback_config:
+        parallelism: 2
+        delay: 5s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Don't expose port directly; use reverse proxy (Nginx)
+    expose:
+      - 8000
+    # Logging configuration for production
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "monitoring=prometheus"
+      - "service=api"
+      - "environment=production"
+
+  worker:
+    restart: always
+    networks:
+      - app
+    env_file: .env
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=${WORKER_CONCURRENCY:-8}
+      - --max-tasks-per-child=1000
+      - --time-limit=3600
+      - --soft-time-limit=3300
+    deploy:
+      replicas: 2  # Run 2+ instances for distributed processing
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "monitoring=prometheus"
+      - "service=worker"
+      - "environment=production"
+
+  beat:
+    restart: always
+    networks:
+      - app
+    env_file: .env
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - beat
+      - --loglevel=info
+      - --scheduler
+      - redbeat.RedBeatScheduler
+    deploy:
+      replicas: 1  # Single instance for scheduler
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+        reservations:
+          cpus: "0.5"
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "monitoring=prometheus"
+      - "service=beat"
+      - "environment=production"
+
+  frontend:
+    restart: always
+    networks:
+      - app
+    # Production Next.js server
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    deploy:
+      replicas: 2  # Multiple instances for HA
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+      update_config:
+        parallelism: 1
+        delay: 10s
+    healthcheck:
+      test: ["CMD", "wget", "-O-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Don't expose port directly; use reverse proxy
+    expose:
+      - 3000
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "monitoring=prometheus"
+      - "service=frontend"
+      - "environment=production"
+
+  flower:
+    restart: always
+    networks:
+      - app
+    env_file: .env
+    # Don't expose publicly; protect with VPN or bastion host
+    expose:
+      - 5555
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    labels:
+      - "monitoring=internal-only"
+      - "service=flower"
+      - "environment=production"
+
+networks:
+  app:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_data_prod:
+    driver: local
+  redis_data_prod:
+    driver: local
+
+# Production deployment with load balancer:
+#
+# 1. Use external load balancer (AWS ALB, DigitalOcean LB, Nginx reverse proxy)
+# 2. Configure DNS to point to load balancer
+# 3. Load balancer forwards to api:8000 and frontend:3000 (internal network only)
+# 4. Use SSL/TLS termination on load balancer
+# 5. Configure health checks on load balancer pointing to /api/v1/health and /
+# 6. Use auto-scaling based on CPU/memory metrics
+# 7. Configure graceful shutdown (SIGTERM handling in application)
