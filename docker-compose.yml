@@ -23,7 +23,7 @@ x-app-env: &app-env
   DATABASE_SYNC_URL: postgresql+psycopg://${DB_USER:-gift}:${DB_PASSWORD:-gift}@postgres:5432/${DB_NAME:-giftfinder}
   REDIS_URL: redis://redis:6379/0
   JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-before-any-deployment}
-  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  CORS_ORIGINS: '["http://localhost:3000"]'
   S3_BUCKET: ${S3_BUCKET:-gift-finder-assets}
   S3_REGION: ${S3_REGION:-us-east-1}
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
