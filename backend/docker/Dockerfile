@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 
 # Install into a dedicated prefix we'll copy into the runtime image.
 RUN pip install --upgrade pip \
