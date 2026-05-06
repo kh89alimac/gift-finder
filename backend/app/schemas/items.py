@@ -32,6 +32,7 @@ class ItemSummary(BaseModel):
     status: ItemStatus
     tags: list[TagSlim] = Field(default_factory=list)
     published_at: datetime | None
+    created_at: datetime
 
 
 class ItemDetail(ItemSummary):
