@@ -87,6 +87,7 @@ class DiscoveryFilters(BaseModel):
     require_all_tags: bool = False
     price_min: Decimal | None = Field(default=None, ge=0)
     price_max: Decimal | None = Field(default=None, ge=0)
+    sort: str = Field(default="relevance")
     cursor: str | None = None
     page_size: int = Field(default=24, ge=1, le=100)
 

@@ -29,6 +29,7 @@ async def list_items(
     require_all_tags: bool = False,
     price_min: Decimal | None = None,
     price_max: Decimal | None = None,
+    sort: str = Query(default="relevance"),
     cursor: str | None = None,
     page_size: int = Query(default=24, ge=1, le=100),
 ) -> CursorPage[ItemSummary]:
@@ -38,6 +39,7 @@ async def list_items(
         require_all_tags=require_all_tags,
         price_min=price_min,
         price_max=price_max,
+        sort=sort,
         cursor=cursor,
         page_size=page_size,
     )
