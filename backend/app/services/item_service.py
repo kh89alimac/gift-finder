@@ -56,6 +56,7 @@ class ItemService:
             tag_ids=filters.tag_ids or None,
             price_min=filters.price_min,
             price_max=filters.price_max,
+            sort=filters.sort,
             limit=filters.page_size + 1,  # fetch one extra to compute next_cursor
             cursor=cursor_obj,
             require_all_tags=filters.require_all_tags,

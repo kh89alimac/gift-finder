@@ -61,6 +61,7 @@ class ItemRepository(BaseRepository[Item]):
         tag_ids: Sequence[int] | None = None,
         price_min: Decimal | None = None,
         price_max: Decimal | None = None,
+        sort: str = "relevance",
         limit: int = 24,
         cursor: ItemPageCursor | None = None,
         require_all_tags: bool = False,
@@ -116,11 +117,19 @@ class ItemRepository(BaseRepository[Item]):
                 )
             )
 
-        stmt = (
-            stmt.order_by(Item.published_at.desc().nulls_last(), Item.id.desc())
-            .limit(limit)
-            .options(selectinload(Item.tags))
-        )
+        if sort == "price_asc":
+            stmt = stmt.order_by(Item.price.asc().nulls_last(), Item.id.desc())
+        elif sort == "price_desc":
+            stmt = stmt.order_by(Item.price.desc().nulls_last(), Item.id.desc())
+        elif sort == "popular":
+            stmt = stmt.order_by(
+                (Item.view_count + Item.save_count * 2 + Item.click_count).desc(),
+                Item.id.desc(),
+            )
+        else:
+            stmt = stmt.order_by(Item.published_at.desc().nulls_last(), Item.id.desc())
+
+        stmt = stmt.limit(limit).options(selectinload(Item.tags))
 
         result = await self.session.execute(stmt)
         return list(result.scalars().unique().all())

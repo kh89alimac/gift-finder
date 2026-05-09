@@ -9,9 +9,11 @@ export function formatPrice(amount: number, currency = 'USD'): string {
 }
 
 // ── Date formatting ────────────────────────────────────────────────────────
-export function formatRelativeDate(date: string | Date): string {
+export function formatRelativeDate(date: string | Date | null | undefined): string {
+  if (!date) return 'Unknown';
   const now = new Date();
   const d = typeof date === 'string' ? new Date(date) : date;
+  if (isNaN(d.getTime())) return 'Unknown';
   const diffMs = now.getTime() - d.getTime();
   const diffSecs = Math.floor(diffMs / 1000);
   const diffMins = Math.floor(diffSecs / 60);
@@ -30,8 +32,10 @@ export function formatRelativeDate(date: string | Date): string {
   return `${diffYears} year${diffYears !== 1 ? 's' : ''} ago`;
 }
 
-export function formatAbsoluteDate(date: string | Date): string {
+export function formatAbsoluteDate(date: string | Date | null | undefined): string {
+  if (!date) return 'Unknown';
   const d = typeof date === 'string' ? new Date(date) : date;
+  if (isNaN(d.getTime())) return 'Unknown';
   return new Intl.DateTimeFormat('en-US', {
     year: 'numeric',
     month: 'short',
@@ -41,7 +45,7 @@ export function formatAbsoluteDate(date: string | Date): string {
   }).format(d);
 }
 
-export function formatDate(date: string | Date): { relative: string; absolute: string } {
+export function formatDate(date: string | Date | null | undefined): { relative: string; absolute: string } {
   return {
     relative: formatRelativeDate(date),
     absolute: formatAbsoluteDate(date),

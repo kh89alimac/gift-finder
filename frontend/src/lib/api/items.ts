@@ -12,9 +12,9 @@ export async function listItems(
   if (filters.relationship) params.relationship = filters.relationship;
   if (filters.occasions?.length) params.occasions = filters.occasions.join(',');
   if (filters.interests?.length) params.interests = filters.interests.join(',');
-  if (filters.budgetMin != null) params.budget_min = filters.budgetMin;
-  if (filters.budgetMax != null) params.budget_max = filters.budgetMax;
-  if (filters.sort) params.sort = filters.sort;
+  if (filters.budgetMin != null) params.price_min = filters.budgetMin;
+  if (filters.budgetMax != null) params.price_max = filters.budgetMax;
+  if (filters.sort && filters.sort !== 'relevance') params.sort = filters.sort;
   if (cursor) params.cursor = cursor;
   if (filters.pageSize) params.page_size = filters.pageSize;
 
